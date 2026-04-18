@@ -18,7 +18,7 @@ def run_scheduler():
 
             today = now.date().isoformat()
 
-            # إذا أرسل اليوم بالفعل → لا تعيد
+            # إذا أرسل اليوم بالفعل
             if data.get("last_daily_date") == today:
                 time.sleep(60)
                 continue
@@ -33,15 +33,16 @@ def run_scheduler():
             # إرسال المقررات
             send_daily_batch()
 
-            # تأكيد الإرسال
+            # تحديث الحالة
             data = load()
             data["last_daily_date"] = today
             save(data)
 
             print("[SCHEDULER] Done.")
 
-            # مهم: ننتظر حتى لا يعيد الإرسال داخل نفس الدقيقة
+            # منع التكرار
             time.sleep(70)
 
         except Exception as e:
-            print("[S
+            print(f"[SCHEDULER ERROR]: {e}")
+            time.sleep(5)
