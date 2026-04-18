@@ -11,35 +11,37 @@ def run_scheduler():
             data = load()
             now = now_amman()
 
-            # إذا لسا ما خلص الإعداد
+            # لازم يكون النظام جاهز
             if data.get("phase") != "running":
-                time.sleep(20)
+                time.sleep(15)
                 continue
 
             today = now.date().isoformat()
 
-            # إذا أرسل اليوم بالفعل
+            # إذا أرسل اليوم بالفعل → لا تعيد
             if data.get("last_daily_date") == today:
                 time.sleep(60)
                 continue
 
-            # فقط بين 20:00 و 20:10
-            if not (now.hour == 20 and now.minute <= 10):
-                time.sleep(30)
+            # نافذة الإرسال (20:00 → 20:10)
+            if not (now.hour == 20 and 0 <= now.minute <= 10):
+                time.sleep(20)
                 continue
 
-            print("Sending daily batch...")
+            print(f"[SCHEDULER] Sending batch at {now}")
 
+            # إرسال المقررات
             send_daily_batch()
 
+            # تأكيد الإرسال
             data = load()
             data["last_daily_date"] = today
             save(data)
 
-            print("Daily batch sent.")
+            print("[SCHEDULER] Done.")
 
-            time.sleep(60)
+            # مهم: ننتظر حتى لا يعيد الإرسال داخل نفس الدقيقة
+            time.sleep(70)
 
         except Exception as e:
-            print("ERROR in scheduler:", e)
-            time.sleep(5)
+            print("[S
