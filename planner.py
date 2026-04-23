@@ -140,7 +140,18 @@ def done_courses_set(data):
 
 def active_poll_courses(data):
     poll_map = data.get("poll_map", {}) or {}
-    return {normalize_text(course) for course in poll_map.values()}
+    out = set()
+
+    for entry in poll_map.values():
+        if isinstance(entry, dict):
+            course = normalize_text(entry.get("course"))
+        else:
+            course = normalize_text(entry)
+
+        if course:
+            out.add(course)
+
+    return out
 
 
 def remaining_courses(data):
@@ -248,4 +259,4 @@ def format_status(data):
         f"المتبقي حسب الإجمالي: {remaining}\n"
         f"الأيام المتبقية: {days}\n"
         f"مقررات اليوم المقترحة: {quota}"
-)
+    )
