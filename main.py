@@ -1,6 +1,7 @@
 from threading import Thread
 import time
 import requests
+import asyncio
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -12,6 +13,7 @@ from bot_api import (
     handle_text_message,
     handle_poll_answer,
     handle_callback_query,
+    set_reset_backfill_callback,
 )
 from scheduler import run_scheduler
 from web import app
@@ -19,6 +21,7 @@ from storage import load, save
 
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+CHANNEL_ENTITY = None
 
 
 def run_web():
@@ -33,15 +36,11 @@ def run_update_loop():
         try:
             response = requests.get(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
-                params={
-                    "offset": offset,
-                    "timeout": 25,
-                },
+                params={"offset": offset, "timeout": 25},
                 timeout=35,
             )
 
             payload = response.json()
-
             if not payload.get("ok"):
                 time.sleep(3)
                 continue
@@ -57,7 +56,6 @@ def run_update_loop():
                     message = update["message"]
                     text = message.get("text", "")
                     chat_id = message.get("chat", {}).get("id", 0)
-
                     if text:
                         handle_text_message(text, chat_id=chat_id)
 
@@ -65,7 +63,6 @@ def run_update_loop():
                     handle_poll_answer(update)
 
                 if "callback_query" in update:
-                    # للتوافق مع أي رسائل inline قديمة فقط
                     handle_callback_query(update)
 
         except Exception as e:
@@ -73,21 +70,34 @@ def run_update_loop():
             time.sleep(3)
 
 
+def sync_backfill_after_reset():
+    if CHANNEL_ENTITY is None:
+        raise RuntimeError("القناة غير جاهزة بعد")
+
+    future = asyncio.run_coroutine_threadsafe(
+        backfill_history(client, CHANNEL_ENTITY),
+        client.loop,
+    )
+    return future.result(timeout=120)
+
+
 async def bootstrap():
+    global CHANNEL_ENTITY
+
     if not API_ID or not API_HASH or not CHANNEL_LINK or not SESSION_STRING:
         raise RuntimeError("Missing required environment variables")
 
     await client.start()
+    CHANNEL_ENTITY = await client.get_entity(CHANNEL_LINK)
 
-    channel = await client.get_entity(CHANNEL_LINK)
-
-    await backfill_history(client, channel)
-    register_collector(client, channel)
+    await backfill_history(client, CHANNEL_ENTITY)
+    register_collector(client, CHANNEL_ENTITY)
+    set_reset_backfill_callback(sync_backfill_after_reset)
 
     send_startup_prompt()
 
     print("System running...")
-    print("Connected to:", getattr(channel, "title", "channel"))
+    print("Connected to:", getattr(CHANNEL_ENTITY, "title", "channel"))
 
     await client.run_until_disconnected()
 
