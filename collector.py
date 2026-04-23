@@ -28,7 +28,7 @@ def register_collector(client, channel):
         if added and data.get("phase") == "running":
             send_message(
                 "📥 وصلت مقررات جديدة:\n" + "\n".join(f"- {c}" for c in added),
-                keyboard=main_menu_keyboard()
+                keyboard=main_menu_keyboard(),
             )
 
 
@@ -56,3 +56,5 @@ async def backfill_history(client, channel):
 
     if changed:
         save(data)
+
+    return len(data.get("courses", []))
