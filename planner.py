@@ -176,6 +176,7 @@ def remaining_total(data):
 def quota_for_today(data, on_date=None):
     on_date = on_date or today_amman()
     days = days_left(data.get("exam_date"), on_date)
+
     if days <= 0:
         return 0
 
