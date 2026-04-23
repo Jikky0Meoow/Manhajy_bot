@@ -7,7 +7,12 @@ from telethon.sessions import StringSession
 
 from config import API_ID, API_HASH, CHANNEL_LINK, SESSION_STRING, PORT, BOT_TOKEN
 from collector import register_collector, backfill_history
-from bot_api import send_startup_prompt, handle_text_message, handle_poll_answer, handle_callback_query
+from bot_api import (
+    send_startup_prompt,
+    handle_text_message,
+    handle_poll_answer,
+    handle_callback_query,
+)
 from scheduler import run_scheduler
 from web import app
 from storage import load, save
@@ -30,9 +35,9 @@ def run_update_loop():
                 f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates",
                 params={
                     "offset": offset,
-                    "timeout": 25
+                    "timeout": 25,
                 },
-                timeout=35
+                timeout=35,
             )
 
             payload = response.json()
@@ -60,6 +65,7 @@ def run_update_loop():
                     handle_poll_answer(update)
 
                 if "callback_query" in update:
+                    # للتوافق مع أي رسائل inline قديمة فقط
                     handle_callback_query(update)
 
         except Exception as e:
