@@ -49,9 +49,12 @@ def run_update_loop():
                 save(data)
 
                 if "message" in update:
-                    text = update["message"].get("text", "")
+                    message = update["message"]
+                    text = message.get("text", "")
+                    chat_id = message.get("chat", {}).get("id", 0)
+
                     if text:
-                        handle_text_message(text)
+                        handle_text_message(text, chat_id=chat_id)
 
                 if "poll_answer" in update:
                     handle_poll_answer(update)
