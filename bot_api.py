@@ -3,7 +3,15 @@ import time
 import requests
 
 from config import BOT_TOKEN, CHAT_ID
-from storage import load, save, mark_done, normalize_text, dedupe
+from storage import (
+    load,
+    save,
+    mark_done,
+    normalize_text,
+    dedupe,
+    insert_course_at,
+    set_done_status,
+)
 from planner import (
     build_daily_batch,
     days_left,
@@ -18,6 +26,13 @@ from planner import (
 API_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
 
+def _allowed_chat(chat_id):
+    try:
+        return int(chat_id or 0) == int(CHAT_ID or 0)
+    except Exception:
+        return False
+
+
 def _post(method, payload):
     if not BOT_TOKEN:
         return None
@@ -27,6 +42,18 @@ def _post(method, payload):
         return response.json()
     except Exception:
         return None
+
+
+def _poll_entry_course(entry):
+    if isinstance(entry, dict):
+        return normalize_text(entry.get("course"))
+    return normalize_text(entry)
+
+
+def _poll_entry_mode(entry):
+    if isinstance(entry, dict):
+        return normalize_text(entry.get("mode")) or "normal"
+    return "normal"
 
 
 def answer_callback_query(callback_query_id, text=None, show_alert=False):
@@ -63,6 +90,10 @@ def main_menu_keyboard():
             [
                 {"text": "تعديل تاريخ الامتحان", "callback_data": "edit_exam_date"},
                 {"text": "تعديل عدد المقررات", "callback_data": "edit_total"},
+            ],
+            [
+                {"text": "إضافة يدوية", "callback_data": "manual_add"},
+                {"text": "تعديل الإنجاز", "callback_data": "edit_progress"},
             ],
         ]
     }
@@ -111,13 +142,13 @@ def send_long_message(text, keyboard=None):
             send_message(part)
 
 
-def send_poll(course):
+def send_poll(course, mode="normal"):
     if not BOT_TOKEN or not CHAT_ID:
         return None
 
     result = _post("sendPoll", {
         "chat_id": CHAT_ID,
-        "question": "هل أنجزت المقرر ؟",
+        "question": "هل أنجزت هذا المقرر ؟",
         "options": json.dumps(["نعم ، الحمد لله", "لا للأسف"], ensure_ascii=False),
         "is_anonymous": "false",
         "allows_multiple_answers": "false",
@@ -127,7 +158,10 @@ def send_poll(course):
         poll_id = result["result"]["poll"]["id"]
         data = load()
         data.setdefault("poll_map", {})
-        data["poll_map"][poll_id] = normalize_text(course)
+        data["poll_map"][poll_id] = {
+            "course": normalize_text(course),
+            "mode": normalize_text(mode) or "normal",
+        }
         save(data)
         return poll_id
 
@@ -144,8 +178,20 @@ def send_course_with_poll(course, prefix=None):
     else:
         send_message(f"📚 {course_n}")
 
-    send_poll(course_n)
+    send_poll(course_n, mode="normal")
     time.sleep(0.5)
+
+
+def send_edit_status_poll(course):
+    course_n = normalize_text(course)
+    if not course_n:
+        return
+
+    send_message(
+        f"اختر حالة الإنجاز للمقرر التالي:\n{course_n}",
+        keyboard=main_menu_keyboard()
+    )
+    send_poll(course_n, mode="edit_status")
 
 
 def send_main_menu():
@@ -188,6 +234,55 @@ def edit_total_prompt():
     )
 
 
+def manual_add_name_prompt():
+    send_message(
+        "أرسل اسم المقرر الذي تريد إضافته يدويًا.",
+        keyboard=main_menu_keyboard()
+    )
+
+
+def manual_add_position_prompt(course_name=None):
+    data = load()
+    max_position = len(data.get("courses", [])) + 1
+
+    if course_name:
+        send_message(
+            f"تم استلام اسم المقرر:\n{normalize_text(course_name)}\n\n"
+            f"الآن أرسل رقم الترتيب المطلوب بين 1 و {max_position}.",
+            keyboard=main_menu_keyboard()
+        )
+    else:
+        send_message(
+            f"أرسل رقم الترتيب المطلوب بين 1 و {max_position}.",
+            keyboard=main_menu_keyboard()
+        )
+
+
+def send_edit_progress_selection_prompt():
+    data = load()
+    courses = data.get("courses", [])
+
+    if not courses:
+        send_message(
+            "لا توجد مقررات حاليًا لتعديل الإنجاز.",
+            keyboard=main_menu_keyboard()
+        )
+        return
+
+    done = {normalize_text(c) for c in data.get("done", [])}
+    lines = ["اختر رقم المقرر الذي تريد تعديل إنجازه:"]
+
+    for index, course in enumerate(courses, start=1):
+        course_n = normalize_text(course)
+        mark = "✅" if course_n in done else "⬜"
+        lines.append(f"{index}. {mark} {course_n}")
+
+    lines.append("")
+    lines.append("أرسل الرقم فقط.")
+
+    send_long_message("\n".join(lines), keyboard=main_menu_keyboard())
+
+
 def send_all_current_courses_with_polls():
     data = load()
     courses = data.get("courses", [])
@@ -200,7 +295,11 @@ def send_all_current_courses_with_polls():
         return
 
     done = dedupe(data.get("done", []))
-    active = {normalize_text(course) for course in (data.get("poll_map", {}) or {}).values()}
+    active = {
+        _poll_entry_course(entry)
+        for entry in (data.get("poll_map", {}) or {}).values()
+        if _poll_entry_course(entry)
+    }
 
     send_message(
         "لنبدأ بسم الله بمعرفة ما تم إنجازه ، سأرسل لك الآن أسماء المقررات وقم بإعلامي أي المقررات أنجزت .",
@@ -384,6 +483,121 @@ def handle_total_input(text):
     send_status_summary()
 
 
+def handle_manual_add_name_input(text):
+    data = load()
+    course_name = normalize_text(text)
+
+    if not course_name:
+        send_message(
+            "اسم المقرر لا يمكن أن يكون فارغًا. أرسل اسمًا صحيحًا.",
+            keyboard=main_menu_keyboard()
+        )
+        return
+
+    existing = {normalize_text(c) for c in data.get("courses", [])}
+    if course_name in existing:
+        send_message(
+            "هذا المقرر موجود مسبقًا في القائمة. أرسل اسمًا آخر أو استخدم عرض جميع المقررات.",
+            keyboard=main_menu_keyboard()
+        )
+        return
+
+    data["pending_manual_course"] = course_name
+    data["phase"] = "ask_manual_course_position"
+    save(data)
+
+    manual_add_position_prompt(course_name)
+
+
+def handle_manual_add_position_input(text):
+    data = load()
+    cleaned = normalize_text(text)
+    course_name = normalize_text(data.get("pending_manual_course"))
+
+    if not course_name:
+        data["phase"] = "running"
+        data["pending_manual_course"] = None
+        save(data)
+        send_message(
+            "لم أجد اسم المقرر المراد إضافته. ابدأ العملية من جديد عبر زر إضافة يدوية.",
+            keyboard=main_menu_keyboard()
+        )
+        return
+
+    if not cleaned.isdigit():
+        manual_add_position_prompt(course_name)
+        send_message(
+            "أرسل رقم ترتيب صحيح فقط.",
+            keyboard=main_menu_keyboard()
+        )
+        return
+
+    position = int(cleaned)
+
+    try:
+        insert_course_at(data, course_name, position)
+    except ValueError as exc:
+        send_message(
+            str(exc),
+            keyboard=main_menu_keyboard()
+        )
+        return
+
+    current_total = int(data.get("total_courses") or 0)
+    known_courses = len(dedupe(data.get("courses", [])))
+    if current_total < known_courses:
+        data["total_courses"] = known_courses
+
+    data["phase"] = "running"
+    data["pending_manual_course"] = None
+    save(data)
+
+    send_message(
+        f"✅ تم إضافة المقرر بنجاح:\n{course_name}\n"
+        f"📍 ترتيبه الحالي: {position}",
+        keyboard=main_menu_keyboard()
+    )
+    send_all_courses_list()
+
+
+def handle_edit_progress_selection_input(text):
+    data = load()
+    cleaned = normalize_text(text)
+
+    if not cleaned.isdigit():
+        send_message(
+            "أرسل رقم المقرر فقط كما هو ظاهر في القائمة.",
+            keyboard=main_menu_keyboard()
+        )
+        send_edit_progress_selection_prompt()
+        return
+
+    index = int(cleaned)
+    courses = data.get("courses", [])
+
+    if index < 1 or index > len(courses):
+        send_message(
+            "الرقم خارج نطاق المقررات الحالية. حاول مرة أخرى.",
+            keyboard=main_menu_keyboard()
+        )
+        send_edit_progress_selection_prompt()
+        return
+
+    course = normalize_text(courses[index - 1])
+    done = {normalize_text(c) for c in data.get("done", [])}
+    current_state = "✅ منجز" if course in done else "⬜ غير منجز"
+
+    data["phase"] = "running"
+    save(data)
+
+    send_message(
+        f"المقرر المختار:\n{course}\nالحالة الحالية: {current_state}",
+        keyboard=main_menu_keyboard()
+    )
+
+    send_edit_status_poll(course)
+
+
 def handle_poll_answer(update):
     poll_answer = update.get("poll_answer", {})
     poll_id = poll_answer.get("poll_id")
@@ -393,16 +607,32 @@ def handle_poll_answer(update):
         return
 
     data = load()
-    course = (data.get("poll_map", {}) or {}).get(poll_id)
+    entry = (data.get("poll_map", {}) or {}).get(poll_id)
 
-    if not course:
+    if not entry:
         return
 
-    if 0 in option_ids:
-        mark_done(data, course)
-        send_message(f"✅ تم إنجاز المقرر:\n{course}")
+    course = _poll_entry_course(entry)
+    mode = _poll_entry_mode(entry)
+
+    if not course:
+        data.get("poll_map", {}).pop(poll_id, None)
+        save(data)
+        return
+
+    if mode == "edit_status":
+        if 0 in option_ids:
+            set_done_status(data, course, True)
+            send_message(f"✅ تم تعديل الإنجاز للمقرر إلى: منجز\n{course}")
+        else:
+            set_done_status(data, course, False)
+            send_message(f"↩️ تم تعديل الإنجاز للمقرر إلى: غير منجز\n{course}")
     else:
-        send_message(f"⏳ سيبقى هذا المقرر في الجدولة:\n{course}")
+        if 0 in option_ids:
+            mark_done(data, course)
+            send_message(f"✅ تم إنجاز المقرر:\n{course}")
+        else:
+            send_message(f"⏳ سيبقى هذا المقرر في الجدولة:\n{course}")
 
     data.get("poll_map", {}).pop(poll_id, None)
     save(data)
@@ -421,7 +651,7 @@ def handle_callback_query(update):
     chat = message.get("chat", {})
     chat_id = chat.get("id", 0)
 
-    if int(chat_id or 0) != CHAT_ID:
+    if not _allowed_chat(chat_id):
         return
 
     answer_callback_query(callback_id)
@@ -456,6 +686,19 @@ def handle_callback_query(update):
         edit_total_prompt()
         return
 
+    if data_value == "manual_add":
+        data["phase"] = "ask_manual_course_name"
+        data["pending_manual_course"] = None
+        save(data)
+        manual_add_name_prompt()
+        return
+
+    if data_value == "edit_progress":
+        data["phase"] = "edit_progress_select"
+        save(data)
+        send_edit_progress_selection_prompt()
+        return
+
     if data_value == "show_all_with_polls":
         send_all_current_courses_with_polls()
         return
@@ -477,7 +720,10 @@ def handle_callback_query(update):
         return
 
 
-def handle_text_message(text):
+def handle_text_message(text, chat_id=None):
+    if chat_id is not None and not _allowed_chat(chat_id):
+        return
+
     data = load()
     phase = data.get("phase", "ask_exam_date")
     cleaned = (text or "").strip()
@@ -488,6 +734,10 @@ def handle_text_message(text):
         return
 
     if lower_cleaned in {"/menu", "menu", "القائمة"}:
+        if phase in {"ask_manual_course_name", "ask_manual_course_position", "edit_progress_select"}:
+            data["phase"] = "running"
+            data["pending_manual_course"] = None
+            save(data)
         send_main_menu()
         return
 
@@ -497,6 +747,18 @@ def handle_text_message(text):
 
     if phase in {"ask_total", "edit_total"}:
         handle_total_input(cleaned)
+        return
+
+    if phase == "ask_manual_course_name":
+        handle_manual_add_name_input(cleaned)
+        return
+
+    if phase == "ask_manual_course_position":
+        handle_manual_add_position_input(cleaned)
+        return
+
+    if phase == "edit_progress_select":
+        handle_edit_progress_selection_input(cleaned)
         return
 
     if lower_cleaned in {"/all", "all", "جميع المقررات"}:
@@ -527,6 +789,19 @@ def handle_text_message(text):
         ask_total_prompt()
         return
 
+    if lower_cleaned in {"/manualadd", "manualadd", "إضافة يدوية", "اضافة يدوية"}:
+        data["phase"] = "ask_manual_course_name"
+        data["pending_manual_course"] = None
+        save(data)
+        manual_add_name_prompt()
+        return
+
+    if lower_cleaned in {"/editprogress", "editprogress", "تعديل الإنجاز", "تعديل الانجاز"}:
+        data["phase"] = "edit_progress_select"
+        save(data)
+        send_edit_progress_selection_prompt()
+        return
+
     send_main_menu()
 
 
@@ -550,6 +825,18 @@ def send_startup_prompt():
 
     if phase == "edit_total":
         edit_total_prompt()
+        return
+
+    if phase == "ask_manual_course_name":
+        manual_add_name_prompt()
+        return
+
+    if phase == "ask_manual_course_position":
+        manual_add_position_prompt(data.get("pending_manual_course"))
+        return
+
+    if phase == "edit_progress_select":
+        send_edit_progress_selection_prompt()
         return
 
     if phase == "running":
