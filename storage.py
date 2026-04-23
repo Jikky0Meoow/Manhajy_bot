@@ -29,11 +29,13 @@ def normalize_text(text):
 def dedupe(items):
     seen = set()
     out = []
+
     for item in items:
         item = normalize_text(item)
         if item and item not in seen:
             seen.add(item)
             out.append(item)
+
     return out
 
 
@@ -70,13 +72,16 @@ def save(data):
     tmp = FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(base, f, ensure_ascii=False, indent=2)
+
     os.replace(tmp, FILE)
 
 
 def mark_done(data, course):
     course = normalize_text(course)
+
     if course and course not in data["done"]:
         data["done"].append(course)
+
     data["done"] = dedupe(data["done"])
     return data
 
@@ -116,3 +121,16 @@ def insert_course_at(data, course, position):
     courses.insert(position - 1, course)
     data["courses"] = courses
     return data
+
+
+def reset_data(current=None):
+    """
+    إعادة ضبط كاملة مع الإبقاء على offset فقط
+    حتى لا يعيد البوت معالجة تحديثات قديمة من Telegram.
+    """
+    clean = default_data()
+
+    if current:
+        clean["offset"] = int(current.get("offset", 0) or 0)
+
+    return clean
